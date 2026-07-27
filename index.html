@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Hang Timer</title>
+<style>
+  :root {
+    --bg: #000;
+    --fg: #fff;
+    --dim: #8a8a8a;
+    --line: #2a2a2a;
+    --green: #1a7f37;
+    --red: #b42318;
+    --gray: #3a3a3a;
+    --warn: #7a5c00;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+             max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    max-width: 620px;
+    margin: 0 auto;
+    touch-action: manipulation;
+  }
+  button, .big, .sub, .phase {
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
+  }
+
+  .display {
+    text-align: center;
+    padding: 8px 0 4px;
+  }
+  .big {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(4rem, 25vw, 12rem);
+    line-height: 1.02;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .big.go { color: #35d15a; }
+  .sub {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(1.1rem, 6vw, 2rem);
+    color: var(--dim);
+  }
+  .phase {
+    font-size: 0.95rem;
+    color: var(--dim);
+    min-height: 1.3em;
+    margin-top: 6px;
+  }
+
+  .buttons { display: flex; flex-direction: column; gap: 12px; margin: 16px 0; }
+  button {
+    display: block;
+    width: 100%;
+    min-height: 88px;
+    border: 0;
+    border-radius: 14px;
+    color: #fff;
+    font-size: 1.7rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:active { filter: brightness(1.35); }
+  button[disabled] { opacity: 0.35; }
+  #btnStart { background: var(--green); }
+  #btnStop  { background: var(--red); }
+  #btnReset { background: var(--gray); }
+
+  .warn {
+    display: none;
+    background: var(--warn);
+    color: #fff;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 0.9rem;
+    margin-bottom: 12px;
+    line-height: 1.35;
+  }
+  .warn.show { display: block; }
+
+  details {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin-bottom: 14px;
+  }
+  summary { font-size: 1.05rem; cursor: pointer; padding: 6px 0; }
+  .row { margin: 14px 0; }
+  .row label { display: block; font-size: 0.92rem; color: var(--dim); margin-bottom: 6px; }
+  select, input[type=range] { width: 100%; }
+  select {
+    background: #141414; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px; font-size: 1rem;
+  }
+  input[type=range] { min-height: 40px; accent-color: #35d15a; }
+  .val { color: var(--fg); font-variant-numeric: tabular-nums; }
+  .smallbtn {
+    min-height: 52px; font-size: 1.05rem; background: #2b2b2b;
+    letter-spacing: 0.02em;
+  }
+
+  h2 { font-size: 1rem; color: var(--dim); font-weight: 600; margin: 18px 0 8px; }
+  .best {
+    font-size: 1.25rem; font-weight: 700; padding: 10px 12px;
+    background: #10240f; border: 1px solid #235c22; border-radius: 10px; margin-bottom: 10px;
+  }
+  ol.hist { list-style: none; margin: 0; padding: 0; }
+  ol.hist li {
+    display: flex; justify-content: space-between; gap: 10px;
+    padding: 10px 12px; border-bottom: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+  }
+  ol.hist li:last-child { border-bottom: 0; }
+  ol.hist .t { color: var(--dim); font-size: 0.85rem; }
+  .empty { color: var(--dim); padding: 8px 2px; font-size: 0.92rem; }
+  footer { color: var(--dim); font-size: 0.8rem; text-align: center; margin: 18px 0 6px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<div id="warnWake" class="warn"></div>
+<div id="warnTTS" class="warn"></div>
+
+<div class="display">
+  <div id="big" class="big">0</div>
+  <div id="sub" class="sub">00:00</div>
+  <div id="phase" class="phase">Наденьте наушники и нажмите START</div>
+</div>
+
+<div class="buttons">
+  <button id="btnStart" type="button">START</button>
+  <button id="btnStop" type="button">STOP</button>
+  <button id="btnReset" type="button">RESET</button>
+</div>
+
+<details id="settings">
+  <summary>Настройки</summary>
+
+  <div class="row">
+    <label for="setPrep">Подготовительный отсчёт</label>
+    <select id="setPrep">
+      <option value="3">3 секунды</option>
+      <option value="5">5 секунд</option>
+      <option value="10">10 секунд</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="setMode">Режим озвучки</label>
+    <select id="setMode">
+      <option value="mixed">Каждую секунду до 20, дальше каждые 5</option>
+      <option value="every">Каждую секунду всегда</option>
+      <option value="five">Каждые 5 секунд</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="setRate">Скорость речи: <span id="valRate" class="val">1.2</span></label>
+    <input id="setRate" type="range" min="0.8" max="2" step="0.1">
+  </div>
+
+  <div class="row">
+    <label for="setLead">Опережение речи: <span id="valLead" class="val">150</span> мс</label>
+    <input id="setLead" type="range" min="0" max="400" step="10">
+  </div>
+
+  <div class="row">
+    <button id="btnTest" class="smallbtn" type="button">TEST VOICE</button>
+  </div>
+</details>
+
+<h2>История подходов</h2>
+<div id="best" class="best" style="display:none"></div>
+<ol id="hist" class="hist"></ol>
+<div id="histEmpty" class="empty">Пока пусто.</div>
+<div class="row">
+  <button id="btnClear" class="smallbtn" type="button">Очистить историю</button>
+</div>
+
+<footer id="voiceInfo"></footer>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------------- константы ---------------- */
+
+  var TICK_MS = 50;          // частота опроса расписания
+  var STALE_MS = 1200;       // насколько метка может опоздать, чтобы её ещё имело смысл озвучить
+  var GO_HOLD_MS = 600;      // сколько держим на экране надпись GO
+  var HISTORY_KEEP = 50;     // сколько подходов храним
+  var HISTORY_SHOW = 10;     // сколько показываем
+
+  var LS_HISTORY = 'hangTimer.history';
+  var LS_SETTINGS = 'hangTimer.settings';
+
+  var DEFAULTS = { prep: 3, rate: 1.2, lead: 150, mode: 'mixed' };
+
+  /* ---------------- элементы ---------------- */
+
+  var elBig = document.getElementById('big');
+  var elSub = document.getElementById('sub');
+  var elPhase = document.getElementById('phase');
+  var elWarnWake = document.getElementById('warnWake');
+  var elWarnTTS = document.getElementById('warnTTS');
+  var btnStart = document.getElementById('btnStart');
+  var btnStop = document.getElementById('btnStop');
+  var btnReset = document.getElementById('btnReset');
+  var btnTest = document.getElementById('btnTest');
+  var btnClear = document.getElementById('btnClear');
+  var setPrep = document.getElementById('setPrep');
+  var setMode = document.getElementById('setMode');
+  var setRate = document.getElementById('setRate');
+  var setLead = document.getElementById('setLead');
+  var valRate = document.getElementById('valRate');
+  var valLead = document.getElementById('valLead');
+  var elBest = document.getElementById('best');
+  var elHist = document.getElementById('hist');
+  var elHistEmpty = document.getElementById('histEmpty');
+  var elVoiceInfo = document.getElementById('voiceInfo');
+
+  /* ---------------- числительные ---------------- */
+
+  var ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+              'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+              'seventeen', 'eighteen', 'nineteen'];
+  var TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+  function words(n) {
+    n = Math.floor(n);
+    if (n < 0) return 'minus ' + words(-n);
+    if (n < 20) return ONES[n];
+    if (n < 100) {
+      var r = n % 10;
+      return TENS[Math.floor(n / 10)] + (r ? ' ' + ONES[r] : '');
+    }
+    if (n < 1000) {
+      var rem = n % 100;
+      return ONES[Math.floor(n / 100)] + ' hundred' + (rem ? ' ' + words(rem) : '');
+    }
+    var rest = n % 1000;
+    return words(Math.floor(n / 1000)) + ' thousand' + (rest ? ' ' + words(rest) : '');
+  }
+
+  function mmss(totalSec) {
+    totalSec = Math.max(0, Math.floor(totalSec));
+    var m = Math.floor(totalSec / 60);
+    var s = totalSec % 60;
+    return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  /* ---------------- настройки ---------------- */
+
+  var settings = loadSettings();
+
+  function loadSettings() {
+    var s = { prep: DEFAULTS.prep, rate: DEFAULTS.rate, lead: DEFAULTS.lead, mode: DEFAULTS.mode };
+    try {
+      var raw = localStorage.getItem(LS_SETTINGS);
+      if (raw) {
+        var o = JSON.parse(raw);
+        if (o && typeof o === 'object') {
+          if (o.prep === 3 || o.prep === 5 || o.prep === 10) s.prep = o.prep;
+          if (typeof o.rate === 'number' && o.rate >= 0.8 && o.rate <= 2) s.rate = o.rate;
+          if (typeof o.lead === 'number' && o.lead >= 0 && o.lead <= 400) s.lead = o.lead;
+          if (o.mode === 'mixed' || o.mode === 'every' || o.mode === 'five') s.mode = o.mode;
+        }
+      }
+    } catch (e) { /* повреждённые данные — используем значения по умолчанию */ }
+    return s;
+  }
+
+  function saveSettings() {
+    try { localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); } catch (e) {}
+  }
+
+  function applySettingsToUI() {
+    setPrep.value = String(settings.prep);
+    setMode.value = settings.mode;
+    setRate.value = String(settings.rate);
+    setLead.value = String(settings.lead);
+    valRate.textContent = settings.rate.toFixed(1);
+    valLead.textContent = String(settings.lead);
+  }
+
+  setPrep.addEventListener('change', function () {
+    settings.prep = parseInt(setPrep.value, 10); saveSettings();
+  });
+  setMode.addEventListener('change', function () {
+    settings.mode = setMode.value; saveSettings();
+  });
+  setRate.addEventListener('input', function () {
+    settings.rate = parseFloat(setRate.value);
+    valRate.textContent = settings.rate.toFixed(1);
+    saveSettings();
+  });
+  setLead.addEventListener('input', function () {
+    settings.lead = parseInt(setLead.value, 10);
+    valLead.textContent = String(settings.lead);
+    saveSettings();
+  });
+
+  /* ---------------- синтез речи ---------------- */
+
+  var ttsOK = ('speechSynthesis' in window) && (typeof window.SpeechSynthesisUtterance === 'function');
+  var voice = null;
+  var unlocked = false;
+
+  if (!ttsOK) {
+    elWarnTTS.textContent = 'Этот браузер не поддерживает синтез речи (Web Speech API). ' +
+      'Таймер работает, но озвучки не будет. Попробуйте Safari на iOS или Chrome на Android.';
+    elWarnTTS.classList.add('show');
+    elVoiceInfo.textContent = '';
+  }
+
+  function pickVoice() {
+    if (!ttsOK) return;
+    var list = [];
+    try { list = speechSynthesis.getVoices() || []; } catch (e) { list = []; }
+    var en = null, enUS = null;
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i];
+      if (!v || !v.lang) continue;
+      var lang = v.lang.replace('_', '-');
+      if (lang.toLowerCase().indexOf('en') === 0) {
+        if (!en) en = v;
+        if (!enUS && lang.toLowerCase().indexOf('en-us') === 0) enUS = v;
+      }
+    }
+    voice = enUS || en || null;  // нет английского — не падаем, поедет голос по умолчанию
+    elVoiceInfo.textContent = voice
+      ? 'Голос: ' + voice.name + ' (' + voice.lang + ')'
+      : (list.length ? 'Английский голос не найден — используется голос по умолчанию.'
+                     : 'Голоса ещё не загружены.');
+  }
+
+  if (ttsOK) {
+    pickVoice();
+    if (typeof speechSynthesis.addEventListener === 'function') {
+      speechSynthesis.addEventListener('voiceschanged', pickVoice);
+    } else {
+      speechSynthesis.onvoiceschanged = pickVoice;
+    }
+  }
+
+  // Каждое произношение обрывает предыдущее: лучше потерять слово, чем сдвинуть расписание.
+  function speak(text) {
+    if (!ttsOK) return;
+    try {
+      var u = new SpeechSynthesisUtterance(text);
+      u.lang = voice && voice.lang ? voice.lang : 'en-US';
+      if (voice) u.voice = voice;
+      u.rate = settings.rate;
+      u.pitch = 1;
+      u.volume = 1;
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
+    } catch (e) { /* синтез недоступен — молча продолжаем считать */ }
+  }
+
+  // Разблокировка звука на iOS: только синхронно, прямо в обработчике жеста.
+  function unlockAudio() {
+    if (!ttsOK || unlocked) return;
+    try {
+      var u = new SpeechSynthesisUtterance(' ');
+      u.volume = 1;
+      u.rate = settings.rate;
+      speechSynthesis.speak(u);
+      unlocked = true;
+    } catch (e) {}
+  }
+
+  // Обход бага десктопного Chrome: синтез сам засыпает примерно через 15 с.
+  var keepAliveId = null;
+  function startKeepAlive() {
+    if (!ttsOK || keepAliveId !== null) return;
+    keepAliveId = setInterval(function () {
+      try {
+        if (speechSynthesis.speaking || speechSynthesis.pending) {
+          speechSynthesis.pause();
+          speechSynthesis.resume();
+        }
+      } catch (e) {}
+    }, 10000);
+  }
+  function stopKeepAlive() {
+    if (keepAliveId !== null) { clearInterval(keepAliveId); keepAliveId = null; }
+  }
+
+  /* ---------------- wake lock ---------------- */
+
+  var wakeLock = null;
+  var wakeSupported = !!(navigator.wakeLock && typeof navigator.wakeLock.request === 'function');
+
+  if (!wakeSupported) {
+    elWarnWake.textContent = 'Wake Lock недоступен, поставьте в настройках телефона ' +
+      'автоблокировку экрана на «Никогда».' +
+      (location.protocol === 'file:' ? ' (При открытии файла через file:// API не работает — нужен https.)' : '');
+    elWarnWake.classList.add('show');
+  }
+
+  function acquireWakeLock() {
+    if (!wakeSupported || wakeLock) return;
+    try {
+      navigator.wakeLock.request('screen').then(function (lock) {
+        wakeLock = lock;
+        lock.addEventListener('release', function () { wakeLock = null; });
+      }, function () { /* не критично */ });
+    } catch (e) { /* не критично */ }
+  }
+
+  function releaseWakeLock() {
+    if (!wakeLock) return;
+    try { wakeLock.release(); } catch (e) {}
+    wakeLock = null;
+  }
+
+  // Лок теряется при уходе страницы в фон — переподнимаем при возврате.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && state !== 'idle') acquireWakeLock();
+  });
+
+  /* ---------------- расписание меток ---------------- */
+
+  function firstMark() {
+    return settings.mode === 'five' ? 5 : 1;
+  }
+
+  function nextMark(prev) {
+    if (settings.mode === 'every') return prev + 1;
+    if (settings.mode === 'five') return prev + 5;
+    return prev < 20 ? prev + 1 : prev + 5;   // mixed: ... nineteen, twenty, twenty five, thirty
+  }
+
+  /* ---------------- состояние ---------------- */
+
+  var state = 'idle';        // idle | prep | running
+  var startTime = 0;         // абсолютная метка performance.now() для t = 0
+  var prepEvents = [];       // ещё не произнесённые слова подготовки
+  var pendingMark = 0;       // следующая ещё не произнесённая метка секунд
+  var tickId = null;
+  var lastShownBig = null;
+  var lastShownSub = null;
+
+  function now() { return performance.now(); }
+
+  function setBig(text, isGo) {
+    if (text !== lastShownBig) {
+      elBig.textContent = text;
+      lastShownBig = text;
+    }
+    if (isGo) elBig.classList.add('go'); else elBig.classList.remove('go');
+  }
+
+  function setSub(text) {
+    if (text !== lastShownSub) { elSub.textContent = text; lastShownSub = text; }
+  }
+
+  function startTicking() {
+    if (tickId === null) tickId = setInterval(tick, TICK_MS);
+  }
+  function stopTicking() {
+    if (tickId !== null) { clearInterval(tickId); tickId = null; }
+  }
+
+  // Из набора просроченных меток озвучиваем только последнюю и только если она свежая:
+  // после возврата из фона пачку слов проговаривать нельзя.
+  function speakIfFresh(text, dueAt, t) {
+    if (text === null) return;
+    if (t - dueAt <= STALE_MS) speak(text);
+  }
+
+  function tick() {
+    var t = now();
+
+    if (state === 'prep') {
+      var lastText = null, lastDue = 0;
+      while (prepEvents.length && t >= prepEvents[0].at - settings.lead) {
+        var ev = prepEvents.shift();
+        lastText = ev.text;
+        lastDue = ev.at - settings.lead;
+      }
+      speakIfFresh(lastText, lastDue, t);
+
+      var remain = startTime - t;
+      if (remain > 0) {
+        setBig(String(Math.ceil(remain / 1000)), false);
+        setSub('00:00');
+        return;
+      }
+      state = 'running';
+      pendingMark = firstMark();
+      elPhase.textContent = 'Идёт вис';
+      // дальше проваливаемся в ветку running этого же тика
+    }
+
+    if (state !== 'running') return;
+
+    var elapsed = t - startTime;
+
+    // экран
+    if (elapsed < GO_HOLD_MS) {
+      setBig('GO', true);
+    } else {
+      setBig(String(Math.floor(elapsed / 1000)), false);
+    }
+    setSub(mmss(elapsed / 1000));
+
+    // озвучка
+    var markText = null, markDue = 0;
+    while (elapsed >= pendingMark * 1000 - settings.lead) {
+      markText = words(pendingMark);
+      markDue = startTime + pendingMark * 1000 - settings.lead;
+      pendingMark = nextMark(pendingMark);
+    }
+    speakIfFresh(markText, markDue, t);
+  }
+
+  /* ---------------- управление ---------------- */
+
+  function start() {
+    if (state !== 'idle') return;   // повторный START во время работы игнорируется
+
+    unlockAudio();                  // синхронно, пока жест «свежий»
+
+    var prepMs = settings.prep * 1000;
+    var t0 = now();
+    startTime = t0 + prepMs;        // абсолютная метка GO, дальше всё считается от неё
+
+    prepEvents = [];
+    var counts = [3, 2, 1];         // вслух только последние три секунды
+    for (var i = 0; i < counts.length; i++) {
+      var at = startTime - counts[i] * 1000;
+      if (at >= t0 - 1) prepEvents.push({ at: at, text: words(counts[i]) });
+    }
+    prepEvents.push({ at: startTime, text: 'go' });
+
+    state = 'prep';
+    elPhase.textContent = 'Приготовьтесь…';
+    setBig(String(settings.prep), false);
+    setSub('00:00');
+
+    btnStart.disabled = true;
+    acquireWakeLock();
+    startKeepAlive();
+    startTicking();
+    tick();
+  }
+
+  function finish(record) {
+    var wasRunning = (state === 'running');
+    var elapsed = wasRunning ? (now() - startTime) : 0;
+    var sec = Math.floor(elapsed / 1000);
+
+    stopTicking();
+    stopKeepAlive();
+    releaseWakeLock();
+    state = 'idle';
+    prepEvents = [];
+    btnStart.disabled = false;
+
+    if (!wasRunning) {
+      // STOP во время подготовки: отменяем отсчёт, ничего не записываем
+      try { if (ttsOK) speechSynthesis.cancel(); } catch (e) {}
+      setBig('0', false);
+      setSub('00:00');
+      elPhase.textContent = 'Отсчёт отменён';
+      return;
+    }
+
+    setBig(String(sec), false);
+    setSub(mmss(sec));
+
+    if (record && sec >= 1) {
+      speak(words(sec) + (sec === 1 ? ' second' : ' seconds'));
+      addToHistory(sec);
+      elPhase.textContent = 'Подход записан: ' + sec + ' с';
+    } else {
+      try { if (ttsOK) speechSynthesis.cancel(); } catch (e) {}
+      elPhase.textContent = record ? 'Меньше секунды — не записано' : 'Сброшено';
+    }
+  }
+
+  function reset() {
+    stopTicking();
+    stopKeepAlive();
+    releaseWakeLock();
+    state = 'idle';
+    prepEvents = [];
+    btnStart.disabled = false;
+    try { if (ttsOK) speechSynthesis.cancel(); } catch (e) {}
+    setBig('0', false);
+    setSub('00:00');
+    elPhase.textContent = 'Наденьте наушники и нажмите START';
+  }
+
+  btnStart.addEventListener('click', function () { start(); });
+  btnStop.addEventListener('click', function () { finish(true); });
+  btnReset.addEventListener('click', function () { reset(); });
+  btnTest.addEventListener('click', function () {
+    unlockAudio();
+    speak('one two three');
+  });
+
+  /* ---------------- история ---------------- */
+
+  function loadHistory() {
+    try {
+      var raw = localStorage.getItem(LS_HISTORY);
+      if (!raw) return [];
+      var arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(function (r) {
+        return r && typeof r.sec === 'number' && isFinite(r.sec) && r.sec > 0;
+      });
+    } catch (e) { return []; }
+  }
+
+  function saveHistory(arr) {
+    try { localStorage.setItem(LS_HISTORY, JSON.stringify(arr)); } catch (e) {}
+  }
+
+  function addToHistory(sec) {
+    var arr = loadHistory();
+    arr.push({ sec: sec, ts: Date.now() });
+    if (arr.length > HISTORY_KEEP) arr = arr.slice(arr.length - HISTORY_KEEP);
+    saveHistory(arr);
+    renderHistory();
+  }
+
+  function fmtTime(ts) {
+    try {
+      var d = new Date(ts);
+      var p = function (n) { return (n < 10 ? '0' : '') + n; };
+      return p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    } catch (e) { return ''; }
+  }
+
+  function renderHistory() {
+    var arr = loadHistory();
+    elHist.innerHTML = '';
+
+    if (!arr.length) {
+      elBest.style.display = 'none';
+      elHistEmpty.style.display = 'block';
+      return;
+    }
+    elHistEmpty.style.display = 'none';
+
+    var best = 0;
+    for (var i = 0; i < arr.length; i++) if (arr[i].sec > best) best = arr[i].sec;
+    elBest.textContent = 'Лучший результат: ' + best + ' с (' + mmss(best) + ')';
+    elBest.style.display = 'block';
+
+    var shown = arr.slice(Math.max(0, arr.length - HISTORY_SHOW)).reverse();
+    for (var j = 0; j < shown.length; j++) {
+      var r = shown[j];
+      var li = document.createElement('li');
+      var left = document.createElement('span');
+      left.textContent = r.sec + ' с' + (r.sec === best ? '  ★' : '');
+      var right = document.createElement('span');
+      right.className = 't';
+      right.textContent = fmtTime(r.ts);
+      li.appendChild(left);
+      li.appendChild(right);
+      elHist.appendChild(li);
+    }
+  }
+
+  btnClear.addEventListener('click', function () {
+    try { localStorage.removeItem(LS_HISTORY); } catch (e) {}
+    renderHistory();
+  });
+
+  /* ---------------- инициализация ---------------- */
+
+  applySettingsToUI();
+  renderHistory();
+  setBig('0', false);
+  setSub('00:00');
+
+  window.addEventListener('pagehide', function () {
+    stopTicking();
+    stopKeepAlive();
+    releaseWakeLock();
+  });
+})();
+</script>
+</body>
+</html>
