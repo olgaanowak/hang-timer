@@ -117,6 +117,21 @@
     letter-spacing: 0.02em;
   }
 
+  .check { display: flex; align-items: center; gap: 10px; }
+  .check input[type=checkbox] { width: 24px; height: 24px; accent-color: #35d15a; flex: 0 0 auto; }
+  .check label { margin: 0; color: var(--fg); font-size: 1rem; }
+  .hint { color: var(--dim); font-size: 0.82rem; margin-top: 6px; line-height: 1.35; }
+
+  .dbg { margin: 0; }
+  .dbg div {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 0.9rem;
+  }
+  .dbg div:last-child { border-bottom: 0; }
+  .dbg .k { color: var(--dim); }
+  .dbg .v { font-variant-numeric: tabular-nums; text-align: right; }
+  .dbg .v.bad { color: #ff8a7a; }
+
   h2 { font-size: 1rem; color: var(--dim); font-weight: 600; margin: 18px 0 8px; }
   .best {
     font-size: 1.25rem; font-weight: 700; padding: 10px 12px;
@@ -138,6 +153,7 @@
 
 <div id="warnWake" class="warn"></div>
 <div id="warnTTS" class="warn"></div>
+<div id="warnVoice" class="warn"></div>
 
 <div class="display">
   <div id="big" class="big">0</div>
@@ -173,13 +189,26 @@
   </div>
 
   <div class="row">
+    <label for="setVoice">Голос</label>
+    <select id="setVoice"></select>
+    <div class="hint">Локальные голоса синтезируются на устройстве и звучат с постоянной задержкой.
+      Сетевые зависят от связи, задержка плавает.</div>
+  </div>
+
+  <div class="row">
     <label for="setRate">Скорость речи: <span id="valRate" class="val">1.2</span></label>
     <input id="setRate" type="range" min="0.8" max="2" step="0.1">
+  </div>
+
+  <div class="row check">
+    <input id="setAuto" type="checkbox">
+    <label for="setAuto">Автокалибровка опережения</label>
   </div>
 
   <div class="row">
     <label for="setLead">Опережение речи: <span id="valLead" class="val">150</span> мс</label>
     <input id="setLead" type="range" min="0" max="400" step="10">
+    <div class="hint" id="leadHint"></div>
   </div>
 
   <div class="row">
@@ -195,6 +224,20 @@
   <button id="btnClear" class="smallbtn" type="button">Очистить историю</button>
 </div>
 
+<details id="debug">
+  <summary>Отладка</summary>
+  <div class="dbg">
+    <div><span class="k">Голос</span><span class="v" id="dbgVoice">—</span></div>
+    <div><span class="k">Задержка синтеза (медиана из 5)</span><span class="v" id="dbgLatency">—</span></div>
+    <div><span class="k">Текущее опережение</span><span class="v" id="dbgLead">—</span></div>
+    <div><span class="k">Потеряно фраз за подход</span><span class="v" id="dbgLost">0</span></div>
+    <div><span class="k">Прервано фраз за подход</span><span class="v" id="dbgInterrupted">0</span></div>
+    <div><span class="k">Пропущено просроченных</span><span class="v" id="dbgSkipped">0</span></div>
+    <div><span class="k">Wake Lock</span><span class="v" id="dbgWake">—</span></div>
+    <div><span class="k">AudioContext</span><span class="v" id="dbgAudio">—</span></div>
+  </div>
+</details>
+
 <footer id="voiceInfo"></footer>
 
 <script>
@@ -204,15 +247,22 @@
   /* ---------------- константы ---------------- */
 
   var TICK_MS = 50;          // частота опроса расписания
-  var STALE_MS = 1200;       // насколько метка может опоздать, чтобы её ещё имело смысл озвучить
+  var STALE_MS = 400;        // насколько метка может опоздать, чтобы её ещё имело смысл озвучить
   var GO_HOLD_MS = 600;      // сколько держим на экране надпись GO
   var HISTORY_KEEP = 50;     // сколько подходов храним
   var HISTORY_SHOW = 10;     // сколько показываем
 
+  var LATENCY_SAMPLES = 5;   // сколько последних замеров задержки держим для медианы
+  var LOST_TIMEOUT_MS = 1000;// не начал звучать за это время — считаем фразу потерянной
+  var AUTOLEAD_MS = 3000;    // как часто автокалибровка подтягивает опережение к медиане
+  var AUTOLEAD_MAX = 500;    // потолок автоматического опережения
+  var KEEPALIVE_MS = 10000;  // как часто будим движок синтеза
+  var DBG_MS = 250;          // частота обновления отладочной панели
+
   var LS_HISTORY = 'hangTimer.history';
   var LS_SETTINGS = 'hangTimer.settings';
 
-  var DEFAULTS = { prep: 3, rate: 1.2, lead: 150, mode: 'mixed' };
+  var DEFAULTS = { prep: 3, rate: 1.2, lead: 150, mode: 'mixed', auto: true, voiceURI: '' };
 
   /* ---------------- элементы ---------------- */
 
@@ -221,6 +271,7 @@
   var elPhase = document.getElementById('phase');
   var elWarnWake = document.getElementById('warnWake');
   var elWarnTTS = document.getElementById('warnTTS');
+  var elWarnVoice = document.getElementById('warnVoice');
   var btnStart = document.getElementById('btnStart');
   var btnStop = document.getElementById('btnStop');
   var btnReset = document.getElementById('btnReset');
@@ -230,8 +281,19 @@
   var setMode = document.getElementById('setMode');
   var setRate = document.getElementById('setRate');
   var setLead = document.getElementById('setLead');
+  var setAuto = document.getElementById('setAuto');
+  var setVoice = document.getElementById('setVoice');
   var valRate = document.getElementById('valRate');
   var valLead = document.getElementById('valLead');
+  var leadHint = document.getElementById('leadHint');
+  var dbgVoice = document.getElementById('dbgVoice');
+  var dbgLatency = document.getElementById('dbgLatency');
+  var dbgLead = document.getElementById('dbgLead');
+  var dbgLost = document.getElementById('dbgLost');
+  var dbgInterrupted = document.getElementById('dbgInterrupted');
+  var dbgSkipped = document.getElementById('dbgSkipped');
+  var dbgWake = document.getElementById('dbgWake');
+  var dbgAudio = document.getElementById('dbgAudio');
   var elBest = document.getElementById('best');
   var elHist = document.getElementById('hist');
   var elHistEmpty = document.getElementById('histEmpty');
@@ -272,7 +334,8 @@
   var settings = loadSettings();
 
   function loadSettings() {
-    var s = { prep: DEFAULTS.prep, rate: DEFAULTS.rate, lead: DEFAULTS.lead, mode: DEFAULTS.mode };
+    var s = { prep: DEFAULTS.prep, rate: DEFAULTS.rate, lead: DEFAULTS.lead,
+              mode: DEFAULTS.mode, auto: DEFAULTS.auto, voiceURI: DEFAULTS.voiceURI };
     try {
       var raw = localStorage.getItem(LS_SETTINGS);
       if (raw) {
@@ -282,6 +345,8 @@
           if (typeof o.rate === 'number' && o.rate >= 0.8 && o.rate <= 2) s.rate = o.rate;
           if (typeof o.lead === 'number' && o.lead >= 0 && o.lead <= 400) s.lead = o.lead;
           if (o.mode === 'mixed' || o.mode === 'every' || o.mode === 'five') s.mode = o.mode;
+          if (typeof o.auto === 'boolean') s.auto = o.auto;
+          if (typeof o.voiceURI === 'string') s.voiceURI = o.voiceURI;
         }
       }
     } catch (e) { /* повреждённые данные — используем значения по умолчанию */ }
@@ -297,8 +362,22 @@
     setMode.value = settings.mode;
     setRate.value = String(settings.rate);
     setLead.value = String(settings.lead);
+    setAuto.checked = settings.auto;
     valRate.textContent = settings.rate.toFixed(1);
-    valLead.textContent = String(settings.lead);
+    applyLeadUI();
+  }
+
+  // Ползунок опережения активен только в ручном режиме; в авто он показывает то,
+  // что автокалибровка насчитала по измеренной задержке.
+  function applyLeadUI() {
+    setLead.disabled = settings.auto;
+    var v = effectiveLead();
+    valLead.textContent = String(Math.round(v));
+    if (!settings.auto) setLead.value = String(settings.lead);
+    leadHint.textContent = settings.auto
+      ? 'Подстраивается автоматически под измеренную задержку синтеза (0–' + AUTOLEAD_MAX + ' мс). ' +
+        'Снимите галочку, чтобы задать вручную.'
+      : 'Задано вручную. Голос запаздывает — увеличьте, торопится — уменьшите.';
   }
 
   setPrep.addEventListener('change', function () {
@@ -317,6 +396,18 @@
     valLead.textContent = String(settings.lead);
     saveSettings();
   });
+  setAuto.addEventListener('change', function () {
+    settings.auto = setAuto.checked;
+    if (settings.auto) autoLead = clampLead(medianLatency() !== null ? medianLatency() : settings.lead);
+    applyLeadUI();
+    saveSettings();
+  });
+  setVoice.addEventListener('change', function () {
+    settings.voiceURI = setVoice.value;
+    saveSettings();
+    applyVoiceChoice();
+    resetLatency();   // у другого голоса своя задержка, старые замеры не годятся
+  });
 
   /* ---------------- синтез речи ---------------- */
 
@@ -331,47 +422,170 @@
     elVoiceInfo.textContent = '';
   }
 
-  function pickVoice() {
-    if (!ttsOK) return;
-    var list = [];
-    try { list = speechSynthesis.getVoices() || []; } catch (e) { list = []; }
-    var en = null, enUS = null;
-    for (var i = 0; i < list.length; i++) {
-      var v = list[i];
-      if (!v || !v.lang) continue;
-      var lang = v.lang.replace('_', '-');
-      if (lang.toLowerCase().indexOf('en') === 0) {
-        if (!en) en = v;
-        if (!enUS && lang.toLowerCase().indexOf('en-us') === 0) enUS = v;
+  var allVoices = [];
+  var voiceAutoChosen = false;
+
+  function getVoices() {
+    try { return speechSynthesis.getVoices() || []; } catch (e) { return []; }
+  }
+
+  function isEn(v) {
+    return !!(v && v.lang && v.lang.replace('_', '-').toLowerCase().indexOf('en') === 0);
+  }
+
+  function voiceKey(v) { return v.voiceURI || v.name; }
+
+  function voiceLabel(v) {
+    return v.name + ' — ' + v.lang + (v.localService ? ' (локальный)' : ' (сетевой)');
+  }
+
+  // Автовыбор: только локальные английские. Делается один раз, дальше объект кэшируется.
+  function autoSelectVoice() {
+    var localEn = [], anyEn = [];
+    for (var i = 0; i < allVoices.length; i++) {
+      var v = allVoices[i];
+      if (!isEn(v)) continue;
+      anyEn.push(v);
+      if (v.localService) localEn.push(v);
+    }
+    if (localEn.length) return localEn[0];
+    if (anyEn.length) return anyEn[0];   // сетевой — предупредим отдельно
+    return null;                          // английского нет вообще — поедет голос по умолчанию
+  }
+
+  function populateVoiceSelect() {
+    setVoice.innerHTML = '';
+    var optAuto = document.createElement('option');
+    optAuto.value = '';
+    optAuto.textContent = 'Автоматически (локальный английский)';
+    setVoice.appendChild(optAuto);
+    for (var i = 0; i < allVoices.length; i++) {
+      var o = document.createElement('option');
+      o.value = voiceKey(allVoices[i]);
+      o.textContent = voiceLabel(allVoices[i]);
+      setVoice.appendChild(o);
+    }
+    setVoice.value = settings.voiceURI;
+    if (setVoice.selectedIndex < 0) setVoice.value = '';   // сохранённый голос исчез из системы
+  }
+
+  // Определяет активный голос из настроек либо автовыбором и обновляет предупреждения.
+  function applyVoiceChoice() {
+    var chosen = null;
+    if (settings.voiceURI) {
+      for (var i = 0; i < allVoices.length; i++) {
+        if (voiceKey(allVoices[i]) === settings.voiceURI) { chosen = allVoices[i]; break; }
       }
     }
-    voice = enUS || en || null;  // нет английского — не падаем, поедет голос по умолчанию
+    if (!chosen) chosen = autoSelectVoice();
+    voice = chosen;
+    if (allVoices.length) voiceAutoChosen = true;
+
+    if (voice && !voice.localService) {
+      elWarnVoice.textContent = 'Выбран сетевой голос «' + voice.name + '» — он синтезируется на ' +
+        'сервере, задержка будет плавать. Если можно, установите локальный английский голос ' +
+        'в настройках системы или выберите другой в списке голосов.';
+      elWarnVoice.classList.add('show');
+    } else {
+      elWarnVoice.classList.remove('show');
+    }
+
     elVoiceInfo.textContent = voice
-      ? 'Голос: ' + voice.name + ' (' + voice.lang + ')'
-      : (list.length ? 'Английский голос не найден — используется голос по умолчанию.'
-                     : 'Голоса ещё не загружены.');
+      ? 'Голос: ' + voiceLabel(voice)
+      : (allVoices.length ? 'Английский голос не найден — используется голос системы по умолчанию.'
+                          : 'Голоса ещё не загружены.');
+  }
+
+  function onVoicesChanged() {
+    allVoices = getVoices();
+    populateVoiceSelect();
+    applyVoiceChoice();
   }
 
   if (ttsOK) {
-    pickVoice();
+    onVoicesChanged();
     if (typeof speechSynthesis.addEventListener === 'function') {
-      speechSynthesis.addEventListener('voiceschanged', pickVoice);
+      speechSynthesis.addEventListener('voiceschanged', onVoicesChanged);
     } else {
-      speechSynthesis.onvoiceschanged = pickVoice;
+      speechSynthesis.onvoiceschanged = onVoicesChanged;
     }
   }
 
-  // Каждое произношение обрывает предыдущее: лучше потерять слово, чем сдвинуть расписание.
+  /* ---------------- замер задержки синтеза ---------------- */
+
+  var latencies = [];        // последние LATENCY_SAMPLES замеров speak() → onstart
+  var autoLead = settings.lead;
+  var lostCount = 0;         // фраза не начала звучать за LOST_TIMEOUT_MS
+  var interruptedCount = 0;  // пришлось оборвать предыдущую фразу
+  var skippedCount = 0;      // метка просрочена больше чем на STALE_MS
+
+  function resetLatency() { latencies = []; }
+
+  function medianLatency() {
+    if (!latencies.length) return null;
+    var a = latencies.slice().sort(function (x, y) { return x - y; });
+    return a[Math.floor(a.length / 2)];
+  }
+
+  function clampLead(v) { return Math.max(0, Math.min(AUTOLEAD_MAX, Math.round(v))); }
+
+  function effectiveLead() { return settings.auto ? autoLead : settings.lead; }
+
+  function recordLatency(ms) {
+    latencies.push(ms);
+    if (latencies.length > LATENCY_SAMPLES) latencies.shift();
+  }
+
+  /* ---------------- произношение ---------------- */
+
+  // Безусловный cancel() перед speak() — известная причина молчаливой потери фразы.
+  // Обрываем предыдущую только если она действительно ещё звучит, и тогда говорим
+  // следующим тиком событийного цикла, дав движку освободиться.
   function speak(text) {
     if (!ttsOK) return;
     try {
+      if (speechSynthesis.speaking || speechSynthesis.pending) {
+        interruptedCount++;
+        speechSynthesis.cancel();
+        setTimeout(function () { doSpeak(text, true); }, 0);
+      } else {
+        doSpeak(text, true);
+      }
+    } catch (e) { /* синтез недоступен — молча продолжаем считать */ }
+  }
+
+  function doSpeak(text, measure) {
+    try {
       var u = new SpeechSynthesisUtterance(text);
+      if (voice) u.voice = voice;                        // явно, иначе браузер выберет сам
       u.lang = voice && voice.lang ? voice.lang : 'en-US';
-      if (voice) u.voice = voice;
       u.rate = settings.rate;
       u.pitch = 1;
       u.volume = 1;
-      speechSynthesis.cancel();
+
+      if (measure) {
+        var t0 = now();
+        var settled = false;
+        var lostTimer = setTimeout(function () {
+          if (!settled) { settled = true; lostCount++; }
+        }, LOST_TIMEOUT_MS);
+
+        u.onstart = function () {
+          if (settled) return;
+          settled = true;
+          clearTimeout(lostTimer);
+          recordLatency(now() - t0);
+        };
+        u.onerror = function (ev) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(lostTimer);
+          // 'interrupted'/'canceled' — это наш собственный cancel(), а не потеря
+          var err = ev && ev.error;
+          if (err !== 'interrupted' && err !== 'canceled') lostCount++;
+        };
+      }
+
       speechSynthesis.speak(u);
     } catch (e) { /* синтез недоступен — молча продолжаем считать */ }
   }
@@ -388,22 +602,107 @@
     } catch (e) {}
   }
 
-  // Обход бага десктопного Chrome: синтез сам засыпает примерно через 15 с.
-  var keepAliveId = null;
-  function startKeepAlive() {
-    if (!ttsOK || keepAliveId !== null) return;
-    keepAliveId = setInterval(function () {
+  // Движок синтеза засыпает после долгого простоя (и обрывается сам в десктопном Chrome).
+  // Будим его, только когда ничего не произносится, чтобы не задеть живую фразу.
+  if (ttsOK) {
+    setInterval(function () {
       try {
-        if (speechSynthesis.speaking || speechSynthesis.pending) {
+        if (!speechSynthesis.speaking && !speechSynthesis.pending) {
           speechSynthesis.pause();
           speechSynthesis.resume();
         }
       } catch (e) {}
-    }, 10000);
+    }, KEEPALIVE_MS);
   }
-  function stopKeepAlive() {
-    if (keepAliveId !== null) { clearInterval(keepAliveId); keepAliveId = null; }
+
+  /* ---------------- беззвучный сигнал для Bluetooth ---------------- */
+
+  // Между короткими фразами беспроводные наушники закрывают аудиотракт: следующее слово
+  // стартует с задержкой или с обрезанным началом. Держим канал открытым тихим тоном.
+  var audioCtx = null;
+  var toneOsc = null;
+  var toneGain = null;
+
+  function ensureAudioContext() {
+    var Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return null;
+    try {
+      if (!audioCtx) audioCtx = new Ctor();
+      if (audioCtx.state === 'suspended') audioCtx.resume();   // только из жеста
+    } catch (e) { audioCtx = null; }
+    return audioCtx;
   }
+
+  var toneStopTimer = null;
+
+  function startTone() {
+    if (toneStopTimer) { clearTimeout(toneStopTimer); toneStopTimer = null; }
+    var ctx = ensureAudioContext();
+    if (!ctx || toneOsc) return;
+    try {
+      toneGain = ctx.createGain();
+      toneGain.gain.value = 0.001;            // неслышимо, но выход считается активным
+      toneOsc = ctx.createOscillator();
+      toneOsc.type = 'sine';
+      toneOsc.frequency.value = 40;
+      toneOsc.connect(toneGain);
+      toneGain.connect(ctx.destination);
+      toneOsc.start();
+    } catch (e) { toneOsc = null; toneGain = null; }
+  }
+
+  function stopTone() {
+    if (toneStopTimer) { clearTimeout(toneStopTimer); toneStopTimer = null; }
+    try { if (toneOsc) { toneOsc.stop(); toneOsc.disconnect(); } } catch (e) {}
+    try { if (toneGain) toneGain.disconnect(); } catch (e) {}
+    toneOsc = null;
+    toneGain = null;
+  }
+
+  // Даём договорить итоговой фразе и только потом отпускаем аудиоканал.
+  function stopToneAfterSpeech() {
+    if (toneStopTimer) clearTimeout(toneStopTimer);
+    toneStopTimer = setTimeout(function () {
+      toneStopTimer = null;
+      if (state === 'idle') stopTone();
+    }, 3000);
+  }
+
+  /* ---------------- автокалибровка опережения ---------------- */
+
+  setInterval(function () {
+    if (!settings.auto) return;
+    var m = medianLatency();
+    if (m === null) return;
+    var next = clampLead(m);
+    if (next !== autoLead) {
+      autoLead = next;
+      applyLeadUI();
+    }
+  }, AUTOLEAD_MS);
+
+  /* ---------------- отладочная панель ---------------- */
+
+  function setDbg(el, text, bad) {
+    if (el.textContent !== text) el.textContent = text;
+    if (bad) el.classList.add('bad'); else el.classList.remove('bad');
+  }
+
+  function renderDebug() {
+    setDbg(dbgVoice, voice ? voiceLabel(voice) : (ttsOK ? 'по умолчанию (английский не найден)' : 'синтез недоступен'),
+           !!(voice && !voice.localService));
+    var m = medianLatency();
+    setDbg(dbgLatency, m === null ? 'нет замеров' : Math.round(m) + ' мс (' + latencies.length + '/' + LATENCY_SAMPLES + ')', false);
+    setDbg(dbgLead, Math.round(effectiveLead()) + ' мс' + (settings.auto ? ' (авто)' : ' (вручную)'), false);
+    setDbg(dbgLost, String(lostCount), lostCount > 0);
+    setDbg(dbgInterrupted, String(interruptedCount), interruptedCount > 0);
+    setDbg(dbgSkipped, String(skippedCount), skippedCount > 0);
+    setDbg(dbgWake, wakeState, wakeState === 'недоступен' || wakeState === 'отказано' || wakeState === 'ошибка');
+    setDbg(dbgAudio, audioCtx ? audioCtx.state + (toneOsc ? ', тон включён' : ', тон выключен') : 'не создан',
+           !!(audioCtx && audioCtx.state !== 'running'));
+  }
+
+  setInterval(renderDebug, DBG_MS);
 
   /* ---------------- wake lock ---------------- */
 
@@ -417,20 +716,27 @@
     elWarnWake.classList.add('show');
   }
 
+  var wakeState = wakeSupported ? 'не запрошен' : 'недоступен';
+
   function acquireWakeLock() {
     if (!wakeSupported || wakeLock) return;
     try {
       navigator.wakeLock.request('screen').then(function (lock) {
         wakeLock = lock;
-        lock.addEventListener('release', function () { wakeLock = null; });
-      }, function () { /* не критично */ });
-    } catch (e) { /* не критично */ }
+        wakeState = 'активен';
+        lock.addEventListener('release', function () {
+          wakeLock = null;
+          if (wakeState === 'активен') wakeState = 'отпущен системой';
+        });
+      }, function () { wakeState = 'отказано'; });
+    } catch (e) { wakeState = 'ошибка'; }
   }
 
   function releaseWakeLock() {
-    if (!wakeLock) return;
+    if (!wakeLock) { if (wakeSupported && wakeState !== 'отказано') wakeState = 'не запрошен'; return; }
     try { wakeLock.release(); } catch (e) {}
     wakeLock = null;
+    wakeState = 'не запрошен';
   }
 
   // Лок теряется при уходе страницы в фон — переподнимаем при возврате.
@@ -481,22 +787,24 @@
     if (tickId !== null) { clearInterval(tickId); tickId = null; }
   }
 
-  // Из набора просроченных меток озвучиваем только последнюю и только если она свежая:
-  // после возврата из фона пачку слов проговаривать нельзя.
+  // Из набора просроченных меток озвучиваем только последнюю и только если она свежая.
+  // Опоздавшее число — неверная информация в ухе, лучше пропуск.
   function speakIfFresh(text, dueAt, t) {
     if (text === null) return;
     if (t - dueAt <= STALE_MS) speak(text);
+    else skippedCount++;
   }
 
   function tick() {
     var t = now();
+    var lead = effectiveLead();
 
     if (state === 'prep') {
       var lastText = null, lastDue = 0;
-      while (prepEvents.length && t >= prepEvents[0].at - settings.lead) {
+      while (prepEvents.length && t >= prepEvents[0].at - lead) {
         var ev = prepEvents.shift();
         lastText = ev.text;
-        lastDue = ev.at - settings.lead;
+        lastDue = ev.at - lead;
       }
       speakIfFresh(lastText, lastDue, t);
 
@@ -526,9 +834,9 @@
 
     // озвучка
     var markText = null, markDue = 0;
-    while (elapsed >= pendingMark * 1000 - settings.lead) {
+    while (elapsed >= pendingMark * 1000 - lead) {
       markText = words(pendingMark);
-      markDue = startTime + pendingMark * 1000 - settings.lead;
+      markDue = startTime + pendingMark * 1000 - lead;
       pendingMark = nextMark(pendingMark);
     }
     speakIfFresh(markText, markDue, t);
@@ -540,6 +848,11 @@
     if (state !== 'idle') return;   // повторный START во время работы игнорируется
 
     unlockAudio();                  // синхронно, пока жест «свежий»
+    startTone();                    // resume() контекста тоже должен быть внутри жеста
+
+    lostCount = 0;
+    interruptedCount = 0;
+    skippedCount = 0;
 
     var prepMs = settings.prep * 1000;
     var t0 = now();
@@ -560,7 +873,6 @@
 
     btnStart.disabled = true;
     acquireWakeLock();
-    startKeepAlive();
     startTicking();
     tick();
   }
@@ -571,7 +883,6 @@
     var sec = Math.floor(elapsed / 1000);
 
     stopTicking();
-    stopKeepAlive();
     releaseWakeLock();
     state = 'idle';
     prepEvents = [];
@@ -579,6 +890,7 @@
 
     if (!wasRunning) {
       // STOP во время подготовки: отменяем отсчёт, ничего не записываем
+      stopTone();
       try { if (ttsOK) speechSynthesis.cancel(); } catch (e) {}
       setBig('0', false);
       setSub('00:00');
@@ -593,7 +905,9 @@
       speak(words(sec) + (sec === 1 ? ' second' : ' seconds'));
       addToHistory(sec);
       elPhase.textContent = 'Подход записан: ' + sec + ' с';
+      stopToneAfterSpeech();   // тон гасим только после итога, иначе его начало обрежется
     } else {
+      stopTone();
       try { if (ttsOK) speechSynthesis.cancel(); } catch (e) {}
       elPhase.textContent = record ? 'Меньше секунды — не записано' : 'Сброшено';
     }
@@ -601,7 +915,7 @@
 
   function reset() {
     stopTicking();
-    stopKeepAlive();
+    stopTone();
     releaseWakeLock();
     state = 'idle';
     prepEvents = [];
@@ -617,6 +931,7 @@
   btnReset.addEventListener('click', function () { reset(); });
   btnTest.addEventListener('click', function () {
     unlockAudio();
+    ensureAudioContext();   // resume() возможен только из жеста
     speak('one two three');
   });
 
@@ -694,12 +1009,13 @@
 
   applySettingsToUI();
   renderHistory();
+  renderDebug();
   setBig('0', false);
   setSub('00:00');
 
   window.addEventListener('pagehide', function () {
     stopTicking();
-    stopKeepAlive();
+    stopTone();
     releaseWakeLock();
   });
 })();
